@@ -9,4 +9,6 @@ dependencies = [
     "torch>=2.8.0",
     "torchaudio>=2.8.0",
     "transformers>=4.57.1",
+    "uvicorn>=0.38.0",
+    "websockets>=15.0.1",
 ]

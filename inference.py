@@ -25,3 +25,8 @@ def get_decoder():
 def get_processor():
     _, processor = load_model()
     return processor
+
+
+def get_model():
+    model, _ = load_model()
+    return model

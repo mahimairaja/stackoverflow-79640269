@@ -42,28 +42,68 @@ async def stt_predict_live(websocket: WebSocket):
     logging.info(
         "Received WebSocket connection from client host -> %s on port -> %s", host, port
     )
-    buffer = torch.empty(0)
+    raw_bytes_buffer = bytearray()
+    waveform_buffer = torch.empty(0)
+    last_successful_load_size = 0
 
     try:
         while True:
             try:
                 chunk = await asyncio.wait_for(websocket.receive_bytes(), timeout=5)
             except asyncio.TimeoutError:
+                if len(raw_bytes_buffer) > last_successful_load_size:
+                    try:
+                        remaining_bytes = bytes(
+                            raw_bytes_buffer[last_successful_load_size:]
+                        )
+                        if len(remaining_bytes) >= 44:
+                            waveform = audio_utils.audio_processing(remaining_bytes)
+                            waveform_flat = (
+                                waveform.squeeze(0) if waveform.dim() == 2 else waveform
+                            )
+                            waveform_buffer = torch.cat(
+                                (waveform_buffer, waveform_flat), dim=0
+                            )
+                            last_successful_load_size = len(raw_bytes_buffer)
+                    except ValueError:
+                        pass
                 await websocket.send_text(json.dumps({"error": "timeout"}))
                 break
-            waveform = audio_utils.audio_processing(chunk)
-            buffer = torch.cat((buffer, waveform), dim=0)
 
-            if buffer.shape[0] >= audio_utils.BUFFER_SIZE:
-                input_features = buffer[-audio_utils.BUFFER_SIZE :]
+            raw_bytes_buffer.extend(chunk)
+
+            new_data_size = len(raw_bytes_buffer) - last_successful_load_size
+            if new_data_size >= 2048:
+                try:
+                    complete_audio = bytes(raw_bytes_buffer)
+                    waveform = audio_utils.audio_processing(complete_audio)
+                    waveform_flat = (
+                        waveform.squeeze(0) if waveform.dim() == 2 else waveform
+                    )
+
+                    existing_samples = waveform_buffer.shape[0]
+                    new_samples = waveform_flat.shape[0]
+
+                    if new_samples > existing_samples:
+                        samples_to_add = waveform_flat[existing_samples:]
+                        waveform_buffer = torch.cat(
+                            (waveform_buffer, samples_to_add), dim=0
+                        )
+                        last_successful_load_size = len(raw_bytes_buffer)
+
+                except ValueError:
+                    pass
+
+            if waveform_buffer.shape[0] >= audio_utils.BUFFER_SIZE:
+                input_waveform = waveform_buffer[-audio_utils.BUFFER_SIZE :]
+                input_waveform = input_waveform.unsqueeze(0)
                 transcription = audio_utils.audio_transcription(
-                    input_features,
-                    inference.get_encoder(),
-                    inference.get_decoder(),
+                    input_waveform,
+                    inference.get_model(),
                     inference.get_processor(),
                 )
                 response = stt_schema.TranscriptResponse(transcription=transcription)
-                await websocket.send_text(json.dumps(response))
+                await websocket.send_text(json.dumps(response.model_dump()))
                 await asyncio.sleep(0.5)
     except ValueError as invalid_audio:
         await websocket.close(code=1003, reason="Invalid audio")

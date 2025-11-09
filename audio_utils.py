@@ -1,5 +1,6 @@
 from io import BytesIO
 
+import torch
 import torchaudio
 
 SAMPLE_RATE = 16000
@@ -33,14 +34,33 @@ def audio_processing(audio: bytes):
     return waveform
 
 
-def audio_transcription(input_features, encoder, decoder, processor):
-    """
-    Transcribes audio input using a pre-trained model.
+def audio_transcription(waveform, model, processor):
+    if waveform.dim() == 2:
+        waveform = waveform.squeeze(0)
 
-    Args:
-        input_features (torch.Tensor): The input features to transcribe.
-        encoder (torch.nn.Module): The encoder model.
-        decoder (torch.nn.Module): The decoder model.
-        processor (torch.nn.Module): The processor model.
-    """
-    return encoder(input_features).logits.argmax(dim=-1)
+    waveform_np = (
+        waveform.cpu().numpy() if isinstance(waveform, torch.Tensor) else waveform
+    )
+
+    input_features = processor(
+        waveform_np, sampling_rate=SAMPLE_RATE, return_tensors="pt"
+    ).input_features
+
+    device = next(model.parameters()).device
+    input_features = input_features.to(device)
+
+    attention_mask = torch.ones(
+        input_features.shape[:2], dtype=torch.long, device=device
+    )
+
+    with torch.no_grad():
+        generated_ids = model.generate(
+            input_features,
+            attention_mask=attention_mask,
+            language="en",
+            task="transcribe",
+        )
+
+    transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+    return transcription
